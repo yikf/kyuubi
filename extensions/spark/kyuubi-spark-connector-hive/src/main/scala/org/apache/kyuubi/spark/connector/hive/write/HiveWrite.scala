@@ -32,6 +32,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.connector.distributions.{Distribution, Distributions}
 import org.apache.spark.sql.connector.expressions.{Expressions, SortDirection, SortOrder}
 import org.apache.spark.sql.connector.write.{BatchWrite, LogicalWriteInfo, RequiresDistributionAndOrdering}
@@ -66,8 +67,14 @@ case class HiveWrite(
   private val tableLocation = hiveTable.getDataLocation
 
   private val allColumns = info.schema().toAttributes
-  private val dataColumns = allColumns.take(allColumns.length - hiveTable.getPartCols.size())
-  private val partColumns = allColumns.takeRight(hiveTable.getPartCols.size())
+  // Split data and partition columns by name rather than by position. Users can create a
+  // partitioned table whose partition columns are not the trailing columns of the schema
+  // (e.g. df.write.partitionBy("mid_col")), so a positional take/takeRight would mis-classify
+  // columns and lead the metastore to reject the written partition spec. See KYUUBI #6403.
+  private val dataColumns: Seq[AttributeReference] =
+    allColumns.filterNot(col => table.partitionColumnNames.contains(col.name))
+  private val partColumns: Seq[AttributeReference] =
+    allColumns.filter(col => table.partitionColumnNames.contains(col.name))
 
   lazy val tableDesc: TableDesc = new TableDesc(
     hiveTable.getInputFormatClass,
@@ -131,7 +138,8 @@ case class HiveWrite(
       customPartitionLocations: Map[TablePartitionSpec, String],
       options: Map[String, String]): WriteJobDescription = {
     val hiveFileFormat = getHiveFileFormat(fileSinkConf)
-    val dataSchema = StructType(info.schema().fields.take(dataColumns.length))
+    val dataSchema = StructType(
+      info.schema().filterNot(field => table.partitionColumnNames.contains(field.name)))
     val outputWriterFactory = hiveFileFormat.prepareWrite(sparkSession, job, options, dataSchema)
     val metrics: Map[String, SQLMetric] = BasicWriteJobStatsTracker.metrics
     val serializableHadoopConf = new SerializableConfiguration(hadoopConf)

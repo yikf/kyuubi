@@ -398,7 +398,36 @@ class HiveTableCatalog(sparkSession: SparkSession)
         throw new TableAlreadyExistsException(ident)
     }
 
-    loadTable(ident)
+    // The Hive metastore reorders partition columns to the end of the schema, but the CTAS
+    // query output keeps the original column order. Preserve the requested schema on the
+    // returned table so that the subsequent write resolves output columns against the original
+    // order instead of mis-casting a non-last partition column onto a trailing data column.
+    // Rebuild the CatalogTable via newCatalogTable rather than CatalogTable.copy, because the
+    // CatalogTable case class arity varies across Spark versions and a direct copy would bind to
+    // the compile-time signature and fail with NoSuchMethodError at runtime. See KYUUBI #6403.
+    val table = loadTable(ident).asInstanceOf[HiveTable]
+    val catalogTable = table.catalogTable
+    table.copy(catalogTable = newCatalogTable(
+      identifier = catalogTable.identifier,
+      tableType = catalogTable.tableType,
+      storage = catalogTable.storage,
+      schema = schema,
+      provider = catalogTable.provider,
+      partitionColumnNames = catalogTable.partitionColumnNames,
+      bucketSpec = catalogTable.bucketSpec,
+      owner = catalogTable.owner,
+      createTime = catalogTable.createTime,
+      lastAccessTime = catalogTable.lastAccessTime,
+      createVersion = catalogTable.createVersion,
+      properties = catalogTable.properties,
+      stats = catalogTable.stats,
+      viewText = catalogTable.viewText,
+      comment = catalogTable.comment,
+      unsupportedFeatures = catalogTable.unsupportedFeatures,
+      tracksPartitionsInCatalog = catalogTable.tracksPartitionsInCatalog,
+      schemaPreservesCase = catalogTable.schemaPreservesCase,
+      ignoredProperties = catalogTable.ignoredProperties,
+      viewOriginalText = catalogTable.viewOriginalText))
   }
 
   override def alterTable(ident: Identifier, changes: TableChange*): Table = {
